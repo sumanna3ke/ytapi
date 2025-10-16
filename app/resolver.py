@@ -98,65 +98,78 @@ async def _try_parse_html(req: ResolveRequest) -> Optional[str]:
 async def _with_playwright(req: ResolveRequest) -> Optional[str]:
     try:
         from playwright.async_api import async_playwright
+    except ImportError as e:
+        logger.warning(f"Playwright module not installed: {e}")
+        return None
     except Exception as e:
         logger.warning(f"Playwright not available: {e}")
         return None
 
     logger.info("Attempting Playwright headless resolution…")
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent=req.user_agent,
-            extra_http_headers={"Cookie": req.cookie} if req.cookie else None,
-        )
-
-        candidate_url: Optional[str] = None
-
-        def handle_response(response):
-            nonlocal candidate_url
+    
+    candidate_url: Optional[str] = None
+    
+    try:
+        async with async_playwright() as p:
             try:
-                url = response.url
-                if DLINK_RE.search(url) or any(
-                    k in url for k in [
-                        "response.baidupcs.com",
-                        "download",
-                        "get_file",
-                        "/file/download",
-                        "d.terabox",
-                        "download.terabox",
+                browser = await p.chromium.launch(headless=True)
+            except Exception as e:
+                logger.error(f"Failed to launch Chromium browser (missing system dependencies?): {e}")
+                return None
+                
+            context = await browser.new_context(
+                user_agent=req.user_agent,
+                extra_http_headers={"Cookie": req.cookie} if req.cookie else None,
+            )
+
+            def handle_response(response):
+                nonlocal candidate_url
+                try:
+                    url = response.url
+                    if DLINK_RE.search(url) or any(
+                        k in url for k in [
+                            "response.baidupcs.com",
+                            "download",
+                            "get_file",
+                            "/file/download",
+                            "d.terabox",
+                            "download.terabox",
+                        ]
+                    ):
+                        logger.info(f"Captured potential download URL: {url}")
+                        candidate_url = url
+                except Exception:
+                    pass
+
+            context.on("response", handle_response)
+            page = await context.new_page()
+            try:
+                await page.goto(str(req.url), timeout=req.timeout_seconds * 1000, wait_until="domcontentloaded")
+                # Click common buttons to trigger generation if present
+                try:
+                    dl_selectors = [
+                        "text=Download",
+                        "button:has-text('Download')",
+                        "a:has-text('Download')",
                     ]
-                ):
-                    logger.info(f"Captured potential download URL: {url}")
-                    candidate_url = url
-            except Exception:
-                pass
+                    for sel in dl_selectors:
+                        el = await page.query_selector(sel)
+                        if el:
+                            await el.click(timeout=3000)
+                            await page.wait_for_timeout(2000)
+                except Exception:
+                    pass
 
-        context.on("response", handle_response)
-        page = await context.new_page()
-        try:
-            await page.goto(str(req.url), timeout=req.timeout_seconds * 1000, wait_until="domcontentloaded")
-            # Click common buttons to trigger generation if present
-            try:
-                dl_selectors = [
-                    "text=Download",
-                    "button:has-text('Download')",
-                    "a:has-text('Download')",
-                ]
-                for sel in dl_selectors:
-                    el = await page.query_selector(sel)
-                    if el:
-                        await el.click(timeout=3000)
-                        await page.wait_for_timeout(2000)
-            except Exception:
-                pass
+                # Wait a bit for network
+                await page.wait_for_timeout(4000)
+            finally:
+                await context.close()
+                await browser.close()
+    except Exception as e:
+        logger.error(f"Playwright execution error: {e}")
+        return None
 
-            # Wait a bit for network
-            await page.wait_for_timeout(4000)
-        finally:
-            await context.close()
-            await browser.close()
-
-        return candidate_url
+    return candidate_url
 
 
 async def resolve_terabox(req: ResolveRequest) -> ResolvedFile:
