@@ -4,11 +4,15 @@ A small FastAPI service to resolve TeraBox share links into direct download URLs
 
 ## Features
 
-- Resolve TeraBox share page to a direct file URL: `POST /resolve`
-- Proxy-download endpoint with resume support: `GET /download?url=...`
-- Optional Cookie header for private/authenticated links
-- CORS enabled by default (adjust in production)
-- Logging via Loguru
+- 🌐 **Beautiful Web Interface** - User-friendly website to generate download links
+- 🔗 Resolve TeraBox share page to a direct file URL: `POST /resolve`
+- ⬇️ Proxy-download endpoint with resume support: `GET /download?url=...`
+- 🔐 Optional Cookie header for private/authenticated links
+- 🎨 Modern, responsive design with dark theme
+- 📱 Mobile-friendly interface
+- 🚀 Fast API with full OpenAPI documentation
+- 📊 CORS enabled by default (adjust in production)
+- 📝 Logging via Loguru
 
 ## Tech stack
 
@@ -26,6 +30,10 @@ app/
   resolver.py
   logger.py
   __init__.py
+static/
+  index.html
+  style.css
+  script.js
 requirements.txt
 runtime.txt
 render.yaml
@@ -62,6 +70,25 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Open http://localhost:8000/docs for Swagger UI.
+
+## Web Interface
+
+Access the beautiful web interface at: **http://localhost:8000**
+
+### How to Use:
+
+1. **Open the website** in your browser
+2. **Paste your TeraBox share URL** in the input field
+3. **Click "Get Download Link"** and wait 10-30 seconds
+4. **Download directly** or copy the link for later
+
+### Features:
+- ✨ Beautiful, modern dark theme UI
+- 📊 Shows file information (name, size, type)
+- 📋 One-click copy to clipboard
+- 📱 Fully responsive for mobile devices
+- ⚡ Real-time progress feedback
+- 🎯 Supports all TeraBox domains
 
 ## API
 
