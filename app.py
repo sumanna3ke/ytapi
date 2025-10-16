@@ -1,94 +1,103 @@
-# app.py
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pytube import YouTube
+from typing import Optional
 import os
-import shutil
-import tempfile
-from flask import Flask, request, send_file, jsonify
-import yt_dlp
+import uuid
 
-app = Flask(__name__)
+app = FastAPI(title="YouTube Downloader API",
+             description="API for downloading YouTube videos and audio",
+             version="1.0.0")
 
-DOWNLOAD_FOLDER = "downloads"
-COOKIES_FILE = "cookies.txt"
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+# CORS middleware to allow requests from any origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def cleanup_dir(path):
-    if os.path.exists(path):
-        shutil.rmtree(path, ignore_errors=True)
+# Ensure downloads directory exists
+os.makedirs("downloads", exist_ok=True)
 
-def auth_required_error(err: str) -> bool:
-    if not err:
-        return False
-    err_lower = err.lower()
-    return "sign in to confirm" in err_lower or "not a bot" in err_lower or "cookies" in err_lower
+@app.get("/")
+async def read_root():
+    return {"message": "Welcome to YouTube Downloader API. Use /docs for API documentation."}
 
-@app.route("/upload-cookies", methods=["POST"])
-def upload_cookies():
-    if 'file' not in request.files:
-        return jsonify({"error": "Missing file (send as form-data with key 'file')"}), 400
-    f = request.files['file']
-    if not f.filename:
-        return jsonify({"error": "Empty filename"}), 400
-    f.save(COOKIES_FILE)
+@app.get("/video_info")
+async def get_video_info(url: str = Query(..., description="YouTube video URL")):
     try:
-        os.chmod(COOKIES_FILE, 0o600)
-    except Exception:
-        pass
-    return jsonify({"status": "cookies_uploaded"}), 201
-
-@app.route("/download", methods=["GET"])
-def download_video():
-    url = request.args.get("url")
-    if not url:
-        return jsonify({"error": "URL parameter is required"}), 400
-
-    use_cookies = request.args.get("use_cookies", "0") in ("1", "true", "yes")
-
-    tmp_dir = tempfile.mkdtemp(prefix="yt_dl_")
-    outtmpl = os.path.join(tmp_dir, "%(title).100B.%(ext)s")
-
-    ydl_opts = {
-        "format": "best",
-        "outtmpl": outtmpl,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "cachedir": False,
-        "restrictfilenames": True,
-        "merge_output_format": "mp4",
-        "http_headers": {
-            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/116.0.0.0 Safari/537.36"),
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.youtube.com/"
-        },
-        "geo_bypass": True,
-    }
-
-    if use_cookies and os.path.exists(COOKIES_FILE):
-        ydl_opts["cookiefile"] = COOKIES_FILE
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-
-        response = send_file(filename, as_attachment=True)
-        cleanup_dir(tmp_dir)
-        return response
-
+        yt = YouTube(url)
+        return {
+            "title": yt.title,
+            "author": yt.author,
+            "length": yt.length,
+            "views": yt.views,
+            "thumbnail_url": yt.thumbnail_url,
+            "streams": [
+                {
+                    "itag": stream.itag,
+                    "mime_type": stream.mime_type,
+                    "resolution": stream.resolution if hasattr(stream, 'resolution') else None,
+                    "fps": stream.fps if hasattr(stream, 'fps') else None,
+                    "type": "video" if "video" in stream.mime_type else "audio"
+                }
+                for stream in yt.streams
+            ]
+        }
     except Exception as e:
-        cleanup_dir(tmp_dir)
-        err_str = str(e)
-        if auth_required_error(err_str):
-            return jsonify({
-                "error": "youtube_requires_auth",
-                "message": "YouTube blocked this video. It may require login/age verification.",
-                "fix": "Upload a fresh cookies.txt (Netscape format) via /upload-cookies and call /download?use_cookies=1",
-                "detail": err_str
-            }), 403
-        return jsonify({"error": "download_failed", "detail": err_str}), 500
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/download")
+async def download_video(
+    url: str = Query(..., description="YouTube video URL"),
+    itag: Optional[int] = Query(None, description="Stream itag (optional)"),
+    format: str = Query("mp4", description="Output format (mp4 or mp3)")
+):
+    try:
+        yt = YouTube(url)
+        
+        if format.lower() == "mp3":
+            # Get audio stream
+            stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
+            if not stream:
+                raise HTTPException(status_code=400, detail="No audio stream found")
+            
+            # Download the audio
+            temp_filename = f"downloads/{str(uuid.uuid4())}.mp3"
+            stream.download(filename=temp_filename)
+            
+            return FileResponse(
+                temp_filename,
+                media_type="audio/mp3",
+                filename=f"{yt.title}.mp3"
+            )
+        else:
+            # Get video stream
+            if itag:
+                stream = yt.streams.get_by_itag(itag)
+                if not stream:
+                    raise HTTPException(status_code=400, detail=f"No stream found with itag: {itag}")
+            else:
+                # Default to highest resolution progressive stream
+                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+                if not stream:
+                    stream = yt.streams.get_highest_resolution()
+            
+            # Download the video
+            temp_filename = f"downloads/{str(uuid.uuid4())}.mp4"
+            stream.download(filename=temp_filename)
+            
+            return FileResponse(
+                temp_filename,
+                media_type="video/mp4",
+                filename=f"{yt.title}.mp4"
+            )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
