@@ -25,7 +25,11 @@ app/
   models.py
   resolver.py
   logger.py
+  __init__.py
 requirements.txt
+runtime.txt
+render.yaml
+build.sh
 ```
 
 ## Setup
@@ -143,6 +147,7 @@ This endpoint streams the file from the upstream URL to the client. It forwards 
 
 ### Important Notes for Render
 
+- **Python version**: The project uses Python 3.11 (specified in `runtime.txt`). Python 3.13+ has compatibility issues with some dependencies
 - **Free tier limitations**: Free instances spin down after 15 minutes of inactivity and may take 30-60 seconds to wake up
 - **Playwright on Free tier**: Works but builds take longer. Consider upgrading to Starter plan for faster builds
 - **Health checks**: The `/health` endpoint is configured for Render health checks
