@@ -1,16 +1,23 @@
 from typing import Optional
+from pathlib import Path
 
 import anyio
 import httpx
 from fastapi import FastAPI, HTTPException, Header, Request, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .models import ResolveRequest, ResolvedFile, ErrorResponse
 from .resolver import resolve_terabox
 from .logger import logger
 
 app = FastAPI(title="TeraBox Downloader API", version="0.1.0")
+
+# Mount static files directory
+static_path = Path(__file__).parent.parent / "static"
+if static_path.exists():
+    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 # Enable permissive CORS by default; adjust for production
 app.add_middleware(
@@ -20,6 +27,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+async def homepage():
+    """Serve the web interface"""
+    index_path = Path(__file__).parent.parent / "static" / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return {"message": "TeraBox Downloader API", "docs": "/docs"}
 
 
 @app.get("/health")
