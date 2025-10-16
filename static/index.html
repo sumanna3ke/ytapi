@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TeraBox Downloader - Free Direct Download Link Generator</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="#667eea" stroke="#667eea" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 17L12 22L22 17" stroke="#764ba2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 12L12 17L22 12" stroke="#667eea" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <h1>TeraBox Downloader</h1>
+            </div>
+            <p class="subtitle">Generate direct download links for TeraBox files instantly</p>
+        </header>
+
+        <main>
+            <div class="input-section">
+                <div class="input-wrapper">
+                    <input 
+                        type="text" 
+                        id="teraboxUrl" 
+                        placeholder="Paste your TeraBox share link here..."
+                        aria-label="TeraBox URL input"
+                    />
+                    <button id="resolveBtn" onclick="resolveLink()">
+                        <span class="btn-text">Get Download Link</span>
+                        <span class="btn-icon">→</span>
+                    </button>
+                </div>
+                
+                <div class="options">
+                    <label class="checkbox-wrapper">
+                        <input type="checkbox" id="useBrowser" checked>
+                        <span class="checkmark"></span>
+                        <span class="label-text">Use browser fallback (slower but more reliable)</span>
+                    </label>
+                </div>
+            </div>
+
+            <div id="loading" class="loading hidden">
+                <div class="spinner"></div>
+                <p>Resolving your link, please wait...</p>
+                <small>This may take 10-30 seconds</small>
+            </div>
+
+            <div id="result" class="result hidden">
+                <div class="result-header">
+                    <svg class="success-icon" width="24" height="24" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="#10b981" stroke-width="2"/>
+                        <path d="M8 12L11 15L16 9" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <h2>Download Ready!</h2>
+                </div>
+                
+                <div class="file-info">
+                    <div class="info-item" id="filenameInfo">
+                        <span class="info-label">Filename:</span>
+                        <span class="info-value" id="filename">-</span>
+                    </div>
+                    <div class="info-item" id="sizeInfo">
+                        <span class="info-label">Size:</span>
+                        <span class="info-value" id="filesize">-</span>
+                    </div>
+                    <div class="info-item" id="typeInfo">
+                        <span class="info-label">Type:</span>
+                        <span class="info-value" id="filetype">-</span>
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <a id="downloadBtn" href="#" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <path d="M21 15V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H5C4.46957 21 3.96086 20.7893 3.58579 20.4142C3.21071 20.0391 3 19.5304 3 19V15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M7 10L12 15L17 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        Download File
+                    </a>
+                    <button class="btn btn-secondary" onclick="copyToClipboard()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M5 15H4C3.46957 15 2.96086 14.7893 2.58579 14.4142C2.21071 14.0391 2 13.5304 2 13V4C2 3.46957 2.21071 2.96086 2.58579 2.58579C2.96086 2.21071 3.46957 2 4 2H13C13.5304 2 14.0391 2.21071 14.4142 2.58579C14.7893 2.96086 15 3.46957 15 4V5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        Copy Link
+                    </button>
+                </div>
+
+                <button class="btn-reset" onclick="reset()">Try Another Link</button>
+            </div>
+
+            <div id="error" class="error hidden">
+                <div class="error-header">
+                    <svg class="error-icon" width="24" height="24" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="#ef4444" stroke-width="2"/>
+                        <path d="M15 9L9 15M9 9L15 15" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <h2>Failed to Resolve Link</h2>
+                </div>
+                <p id="errorMessage">Could not resolve the download link. Please check the URL and try again.</p>
+                <button class="btn-reset" onclick="reset()">Try Again</button>
+            </div>
+        </main>
+
+        <footer>
+            <div class="footer-content">
+                <p>Supported formats: TeraBox, 1024TeraBox, TeraBox App</p>
+                <p class="api-link">
+                    API Docs: <a href="/docs" target="_blank">View Documentation</a>
+                </p>
+            </div>
+        </footer>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
