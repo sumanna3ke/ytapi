@@ -10,9 +10,12 @@ from loguru import logger
 from .models import ResolveRequest, ResolvedFile
 
 
-INITIAL_STATE_RE = re.compile(r"__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;", re.DOTALL)
-DLINK_RE = re.compile(r"\b(dlink|download|get_file)\b", re.IGNORECASE)
-URL_IN_QUOTES_RE = re.compile(r"https?://[^'\"\s>]+")
+# Updated patterns for modern TeraBox
+INITIAL_STATE_RE = re.compile(r"window\.data\s*=\s*(\{.*?\})\s*;?\s*</script>", re.DOTALL)
+JSON_STATE_RE = re.compile(r'<script\s+id="__NEXT_DATA__"\s+type="application/json">(.*?)</script>', re.DOTALL)
+DLINK_RE = re.compile(r"\b(dlink|download|get_file|d\.terabox|file\.baidu\.com|baidupcs\.com|terabox\.com/s/)\b", re.IGNORECASE)
+URL_IN_QUOTES_RE = re.compile(r'["\'](https?://[^"\'\s]+)["\']')
+FILENAME_RE = re.compile(r'filename[^;=\n]*=(([\'"])?([^;\n]*?)(?(2)\2|))', re.IGNORECASE)
 
 
 async def _head(client: httpx.AsyncClient, url: str, headers: Dict[str, str]) -> Dict[str, Any]:
@@ -50,54 +53,107 @@ def _filename_from_headers(headers: httpx.Headers) -> Optional[str]:
 
 
 async def _try_parse_html(req: ResolveRequest) -> Optional[str]:
-    headers = {"User-Agent": req.user_agent}
+    headers = {
+        "User-Agent": req.user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://www.terabox.com/",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Cache-Control": "max-age=0"
+    }
+    
     if req.cookie:
         headers["Cookie"] = req.cookie
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=req.timeout_seconds) as client:
-        logger.info("Fetching TeraBox page for HTML parsing")
-        resp = await client.get(str(req.url), headers=headers)
-        resp.raise_for_status()
+    async with httpx.AsyncClient(
+        follow_redirects=True, 
+        timeout=req.timeout_seconds,
+        http2=True
+    ) as client:
+        try:
+            logger.info(f"Fetching TeraBox page: {req.url}")
+            resp = await client.get(str(req.url), headers=headers)
+            resp.raise_for_status()
+            html = resp.text
 
-        html = resp.text
+            # Try to find direct download URL in various patterns
+            patterns = [
+                # Try to find direct URLs in the page
+                (r'(https?://[^\s"\']+?/file/[^\s"\']+)', 'Direct file pattern'),
+                (r'(https?://[^\s"\']+?/share/link[^\s"\']+)', 'Share link pattern'),
+                (r'"dlink"\s*:\s*"([^"]+)"', 'DLink in JSON'),
+                (r'downloadUrl\s*[=:]\s*["\']([^"\']+)["\']', 'downloadUrl in JS'),
+            ]
 
-        # Try __INITIAL_STATE__ JSON extraction first
-        m = INITIAL_STATE_RE.search(html)
-        if m:
-            try:
-                state = json.loads(m.group(1))
-                # heuristic: search for any URL fields that look like direct links
-                text = json.dumps(state)
-                urls = URL_IN_QUOTES_RE.findall(text)
-                for u in urls:
-                    if DLINK_RE.search(u):
-                        logger.info("Found candidate direct URL in __INITIAL_STATE__")
-                        return u
-            except Exception as e:
-                logger.debug(f"Failed to parse __INITIAL_STATE__: {e}")
+            for pattern, desc in patterns:
+                matches = re.findall(pattern, html, re.IGNORECASE)
+                for url in matches:
+                    url = url if isinstance(url, str) else url[0] if isinstance(url, tuple) else str(url)
+                    if any(x in url.lower() for x in ['download', 'd.terabox', 'baidupcs', 'terabox.com/s/']):
+                        logger.info(f"Found URL with {desc}: {url}")
+                        return url
 
-        # Fallback: scan scripts and anchors
-        soup = BeautifulSoup(html, "html.parser")
-        # anchors
-        for a in soup.find_all("a", href=True):
-            href = a.get("href")
-            if href and href.startswith("http") and DLINK_RE.search(href):
-                return href
-        # script bodies
-        for script in soup.find_all("script"):
-            content = script.string or script.text or ""
-            if not content:
-                continue
-            for u in URL_IN_QUOTES_RE.findall(content):
-                if DLINK_RE.search(u):
-                    return u
+            # Try JSON data in script tags
+            for script in re.findall(r'<script[^>]*>([\s\S]*?)</script>', html):
+                if not script.strip():
+                    continue
+                
+                # Look for direct URLs in script content
+                urls = re.findall(r'["\'](https?://[^"\'\s]+)["\']', script)
+                for url in urls:
+                    if any(x in url.lower() for x in ['download', 'd.terabox', 'baidupcs', 'terabox.com/s/']):
+                        logger.info(f"Found URL in script: {url}")
+                        return url
+                
+                # Try to parse as JSON
+                try:
+                    data = json.loads(script)
+                    # Flatten nested JSON and search for URLs
+                    flat = {}
+                    def flatten_json(nested_json, prefix=''):
+                        if isinstance(nested_json, dict):
+                            for k, v in nested_json.items():
+                                flatten_json(v, f"{prefix}{k}.")
+                        elif isinstance(nested_json, list):
+                            for i, v in enumerate(nested_json):
+                                flatten_json(v, f"{prefix}{i}.")
+                        else:
+                            flat[prefix[:-1]] = nested_json
+                    
+                    flatten_json(data)
+                    for k, v in flat.items():
+                        if not isinstance(v, str):
+                            continue
+                        if 'url' in k.lower() and 'http' in v and any(x in v.lower() for x in ['download', 'd.terabox', 'baidupcs']):
+                            logger.info(f"Found URL in JSON data at {k}: {v}")
+                            return v
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+            # Fallback: Look for iframe or embed sources
+            soup = BeautifulSoup(html, 'html.parser')
+            for tag in soup.find_all(['iframe', 'embed', 'source', 'a']):
+                url = tag.get('src') or tag.get('href')
+                if not url or not isinstance(url, str):
+                    continue
+                if url.startswith('http') and any(x in url.lower() for x in ['download', 'd.terabox', 'baidupcs']):
+                    logger.info(f"Found URL in {tag.name} tag: {url}")
+                    return url
+
+        except Exception as e:
+            logger.warning(f"Error parsing HTML: {str(e)}")
 
     return None
 
 
 async def _with_playwright(req: ResolveRequest) -> Optional[str]:
     try:
-        from playwright.async_api import async_playwright
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
     except ImportError as e:
         logger.warning(f"Playwright module not installed: {e}")
         return None
@@ -105,68 +161,127 @@ async def _with_playwright(req: ResolveRequest) -> Optional[str]:
         logger.warning(f"Playwright not available: {e}")
         return None
 
-    logger.info("Attempting Playwright headless resolution…")
+    logger.info("Attempting Playwright headless resolution...")
     
     candidate_url: Optional[str] = None
     
     try:
         async with async_playwright() as p:
-            try:
-                browser = await p.chromium.launch(headless=True)
-            except Exception as e:
-                logger.error(f"Failed to launch Chromium browser (missing system dependencies?): {e}")
+            # Try with Chromium first, fall back to Firefox if needed
+            browser = None
+            for browser_type in [p.chromium, p.firefox]:
+                try:
+                    browser = await browser_type.launch(
+                        headless=True,
+                        args=['--no-sandbox', '--disable-setuid-sandbox']
+                    )
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to launch {browser_type.name}: {e}")
+                    continue
+            
+            if not browser:
+                logger.error("Failed to launch any browser")
                 return None
                 
-            context = await browser.new_context(
-                user_agent=req.user_agent,
-                extra_http_headers={"Cookie": req.cookie} if req.cookie else None,
-            )
-
-            def handle_response(response):
-                nonlocal candidate_url
-                try:
-                    url = response.url
-                    if DLINK_RE.search(url) or any(
-                        k in url for k in [
-                            "response.baidupcs.com",
-                            "download",
-                            "get_file",
-                            "/file/download",
-                            "d.terabox",
-                            "download.terabox",
-                        ]
-                    ):
-                        logger.info(f"Captured potential download URL: {url}")
-                        candidate_url = url
-                except Exception:
-                    pass
-
-            context.on("response", handle_response)
-            page = await context.new_page()
             try:
-                await page.goto(str(req.url), timeout=req.timeout_seconds * 1000, wait_until="domcontentloaded")
-                # Click common buttons to trigger generation if present
+                context = await browser.new_context(
+                    user_agent=req.user_agent,
+                    viewport={'width': 1920, 'height': 1080},
+                    extra_http_headers={
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Accept-Encoding": "gzip, deflate, br",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                        "Referer": "https://www.terabox.com/",
+                        "DNT": "1",
+                        "Connection": "keep-alive",
+                        "Upgrade-Insecure-Requests": "1",
+                        **({"Cookie": req.cookie} if req.cookie else {})
+                    },
+                    # Enable JavaScript and other browser features
+                    java_script_enabled=True,
+                    bypass_csp=True,
+                    ignore_https_errors=True,
+                )
+
+                # Intercept network requests to find download URLs
+                async def handle_route(route, request):
+                    url = request.url.lower()
+                    if any(x in url for x in ['d.terabox', 'baidupcs', 'download', 'get_file']):
+                        nonlocal candidate_url
+                        candidate_url = request.url
+                        logger.info(f"Intercepted potential download URL: {request.url}")
+                    await route.continue_()
+
+                # Create a new page
+                page = await context.new_page()
+                await page.route('**/*', handle_route)
+
+                # Navigate to the URL
+                logger.info(f"Navigating to: {req.url}")
                 try:
-                    dl_selectors = [
-                        "text=Download",
-                        "button:has-text('Download')",
-                        "a:has-text('Download')",
-                    ]
-                    for sel in dl_selectors:
-                        el = await page.query_selector(sel)
-                        if el:
-                            await el.click(timeout=3000)
-                            await page.wait_for_timeout(2000)
-                except Exception:
+                    await page.goto(
+                        str(req.url),
+                        timeout=req.timeout_seconds * 1000,
+                        wait_until="domcontentloaded"
+                    )
+                except PlaywrightTimeoutError:
+                    logger.warning("Page load timed out, continuing with current state")
+
+                # Common download button selectors
+                download_selectors = [
+                    "button:has-text('Download')",
+                    "a:has-text('Download')",
+                    "button:has-text('Download Now')",
+                    "a:has-text('Download Now')",
+                    "button:contains('下载')",  # Chinese for Download
+                    "a:contains('下载')",
+                    "button.download-btn",
+                    "a.download-btn",
+                    "button[data-action='download']",
+                    "a[data-action='download']",
+                    "button[onclick*='download']",
+                    "a[onclick*='download']",
+                ]
+
+                # Try to find and click download buttons
+                for selector in download_selectors:
+                    try:
+                        logger.info(f"Trying selector: {selector}")
+                        await page.wait_for_selector(selector, timeout=5000)
+                        element = await page.query_selector(selector)
+                        if element:
+                            logger.info(f"Clicking element: {selector}")
+                            await element.click()
+                            await page.wait_for_timeout(3000)  # Wait for any network requests
+                            if candidate_url:  # If we found a URL, we're done
+                                break
+                    except Exception as e:
+                        logger.debug(f"Selector {selector} failed: {e}")
+                        continue
+
+                # If we still don't have a URL, try to extract from page content
+                if not candidate_url:
+                    content = await page.content()
+                    urls = re.findall(r'["\'](https?://[^"\'\s]+)["\']', content)
+                    for url in urls:
+                        if any(x in url.lower() for x in ['d.terabox', 'baidupcs', 'download', 'get_file']):
+                            candidate_url = url
+                            logger.info(f"Found URL in page content: {url}")
+                            break
+
+                # Wait for any pending network requests
+                try:
+                    await page.wait_for_load_state('networkidle', timeout=5000)
+                except:
                     pass
 
-                # Wait a bit for network
-                await page.wait_for_timeout(4000)
             finally:
                 await context.close()
                 await browser.close()
+
     except Exception as e:
-        logger.error(f"Playwright execution error: {e}")
+        logger.error(f"Playwright error: {str(e)}")
         return None
 
     return candidate_url
