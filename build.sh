@@ -21,8 +21,24 @@ echo "Installing Python dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-echo "Installing Playwright browsers and system dependencies..."
-# Install Chromium browser with system dependencies
-python -m playwright install --with-deps chromium
+echo "Installing Playwright browsers..."
+export PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright
+
+# Try to install system dependencies if we have permissions
+if command -v apt-get &> /dev/null; then
+    echo "Attempting to install Chromium system dependencies..."
+    # Try with playwright's built-in installer first
+    python -m playwright install-deps chromium 2>&1 || {
+        echo "Note: Could not install system dependencies (no sudo access)."
+        echo "Chromium may still work with Render's base image libraries."
+    }
+fi
+
+# Install Chromium browser
+echo "Downloading Chromium browser..."
+python -m playwright install chromium
+
+echo "Verifying Playwright installation..."
+python -c "from playwright.sync_api import sync_playwright; print('✅ Playwright installed successfully')"
 
 echo "Build complete!"
