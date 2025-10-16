@@ -288,27 +288,83 @@ async def _with_playwright(req: ResolveRequest) -> Optional[str]:
 
 
 async def resolve_terabox(req: ResolveRequest) -> ResolvedFile:
-    # 1) Try to parse HTML
+    # 1) Try to parse HTML with enhanced parsing
     url = await _try_parse_html(req)
 
-    # 2) Fallback to Playwright if allowed and needed
+    # 2) Skip Playwright fallback on Render free tier
     if not url and req.use_browser:
-        url = await _with_playwright(req)
+        logger.info("Playwright fallback is disabled on Render free tier")
+        
+    if not url:
+        # Try one more time with different parameters
+        logger.info("Retrying with alternative parsing method...")
+        req_copy = req.copy()
+        req_copy.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        url = await _try_parse_html(req_copy)
 
     if not url:
-        raise ValueError("Could not resolve a direct download URL. The link may be private or TeraBox changed its layout.")
+        raise ValueError(
+            "Could not resolve a direct download URL. "
+            "The link may be private, require login, or TeraBox has updated their site structure.\n\n"
+            "Try these solutions:\n"
+            "1. If the file is private, add your TeraBox cookie in the Cookie field\n"
+            "2. Try the link in a web browser first to verify it's accessible\n"
+            "3. Check if the link is still valid"
+        )
 
     # 3) Probe metadata via HEAD
-    headers = {"User-Agent": req.user_agent}
+    headers = {
+        "User-Agent": req.user_agent,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.terabox.com/",
+        "Origin": "https://www.terabox.com"
+    }
+    
     if req.cookie:
         headers["Cookie"] = req.cookie
-    async with httpx.AsyncClient(follow_redirects=True, timeout=req.timeout_seconds) as client:
-        meta = await _head(client, url, headers)
+        
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True, 
+            timeout=req.timeout_seconds,
+            http2=True
+        ) as client:
+            meta = await _head(client, url, headers)
+            
+            # If HEAD fails, try GET with range to avoid downloading the whole file
+            if not meta.get("content_length"):
+                logger.info("HEAD failed, trying GET with range...")
+                r = await client.get(
+                    url, 
+                    headers={**headers, "Range": "bytes=0-1023"},
+                    follow_redirects=True
+                )
+                if r.status_code == 206:  # Partial Content
+                    meta.update({
+                        "content_length": int(r.headers.get("content-range").split("/")[1])
+                        if "content-range" in r.headers
+                        else None,
+                        "content_type": r.headers.get("content-type"),
+                        "filename": _filename_from_headers(r.headers),
+                        "headers": dict(r.headers),
+                    })
 
-    return ResolvedFile(
-        direct_url=url,
-        filename=meta.get("filename"),
-        content_length=meta.get("content_length"),
-        content_type=meta.get("content_type"),
-        headers=meta.get("headers", {}),
-    )
+        return ResolvedFile(
+            direct_url=url,
+            filename=meta.get("filename"),
+            content_length=meta.get("content_length"),
+            content_type=meta.get("content_type"),
+            headers=meta.get("headers", {}),
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting file metadata: {e}")
+        # Return the URL even if we couldn't get metadata
+        return ResolvedFile(
+            direct_url=url,
+            filename=None,
+            content_length=None,
+            content_type=None,
+            headers={}
+        )
