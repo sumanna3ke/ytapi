@@ -15,16 +15,17 @@ def download_video():
     if not url:
         return jsonify({"error": "URL parameter is required"}), 400
 
-    # yt-dlp options
+    # yt-dlp options with cookies
     ydl_opts = {
-        'format': 'best',  # Best video+audio quality
+        'format': 'best',  # Best video+audio
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s.%(ext)s',
         'noplaylist': True,  # Only single video
+        'quiet': True,
         'postprocessors': [{
             'key': 'FFmpegVideoConvertor',
-            'preferedformat': 'mp4',  # Clean MP4
+            'preferedformat': 'mp4',
         }],
-        'quiet': True  # Reduce log spam
+        'cookiefile': 'cookies.txt'  # Your exported YouTube cookies
     }
 
     try:
@@ -32,7 +33,7 @@ def download_video():
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
 
-        # Send video file as a download
+        # Send the video file as a download
         return send_file(filename, as_attachment=True)
 
     except Exception as e:
