@@ -17,14 +17,14 @@ def download_video():
 
     # yt-dlp options
     ydl_opts = {
-        'format': 'best',  # Best quality video+audio
-        'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s.%(ext)s',  # Save in downloads folder
+        'format': 'best',  # Best video+audio quality
+        'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s.%(ext)s',
         'noplaylist': True,  # Only single video
         'postprocessors': [{
             'key': 'FFmpegVideoConvertor',
-            'preferedformat': 'mp4',  # Ensure proper MP4 container
+            'preferedformat': 'mp4',  # Clean MP4
         }],
-        'quiet': True  # Suppress extra logs
+        'quiet': True  # Reduce log spam
     }
 
     try:
@@ -32,11 +32,13 @@ def download_video():
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
 
-        # Send the video file as a download
+        # Send video file as a download
         return send_file(filename, as_attachment=True)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
